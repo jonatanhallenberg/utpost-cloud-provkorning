@@ -73,7 +73,7 @@ for i in $(seq 1 12); do
   sleep 10
 done
 [ -n "${KEY}" ] || { echo "Fick ingen nyckel. Portalen: ${APP} → Functions → App keys."; exit 1; }
-URL="https://$(az functionapp show --name "${APP}" --resource-group "${RG}" --query defaultHostName --output tsv)/api/process-image"
+URL="https://$(az functionapp show --name "${APP}" --resource-group "${RG}" --query "defaultHostName || properties.defaultHostName" --output tsv)/api/process-image"
 
 if [ -n "${CONTAINER_APP}" ]; then
   # Secrets ger ingen ny revision – variabeländringen gör det, och den nya revisionen läser secreten.

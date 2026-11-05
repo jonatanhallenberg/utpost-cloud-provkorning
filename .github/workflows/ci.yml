@@ -295,7 +295,7 @@ jobs:
           KEY=$(az functionapp keys list --name "$APP" --resource-group "$RG" --query functionKeys.default --output tsv)
           echo "::add-mask::$KEY"
           [ -n "$KEY" ] || { echo "::error::Fick ingen funktionsnyckel för $APP i $RG"; exit 1; }
-          URL="https://$(az functionapp show --name "$APP" --resource-group "$RG" --query defaultHostName --output tsv)/api/process-image"
+          URL="https://$(az functionapp show --name "$APP" --resource-group "$RG" --query "defaultHostName || properties.defaultHostName" --output tsv)/api/process-image"
           # Första anropet efter en deploy är en kallstart – därför 60 s och inte 20.
           SVAR=$(curl -fsS --max-time 60 -X POST "$URL" -H "x-functions-key: $KEY" \
             -H 'Content-Type: application/json' -d '{"filename":"rooktest.jpg","width":400,"height":300}')
