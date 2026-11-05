@@ -1,6 +1,6 @@
 # Pipeline – Utpost
 
-*Exempelifyllt facit (M1, utbyggt t.o.m. M6). Tider är från en riktig körning på mallrepot – teamen fyller i sina egna.*
+*Exempelifyllt facit (M1, utbyggt t.o.m. M7). Tider är från en riktig körning på mallrepot – teamen fyller i sina egna.*
 
 ## Flödet
 
@@ -21,6 +21,8 @@ flowchart LR
   M --> MAIN[main är alltid byggbar]
   MAIN --> D[Deploy → Azure staging<br/>OIDC-inloggning · byt image till sha · vänta på /api/health · röktest]
   D --> ST[staging kör den mergade committen]
+  MAIN --> DF[Deploy → Azure Functions<br/>npm ci --omit=dev i functions/ · OIDC-inloggning · functions-action · röktest process-image]
+  DF --> FN[funktionen kör den mergade committen]
 ```
 
 ## Vad som körs, och varför
@@ -34,9 +36,10 @@ flowchart LR
 | Typkontroll (M2, M5) | `npm run typecheck` (codegen + `vue-tsc` + `tsc`) | ett fält som tagits bort ur schemat men används i en vy – kedjan schema → fråga → vy | ~10 s |
 | Integration (M5) | `npm run test:api` mot Postgres och Mongo som *services* | resolvers som inte stämmer med databasen, N+1 som kommit tillbaka, mutationer utan inloggningskrav – det klientens mockade tester aldrig ser | ~40 s inkl. start av databaserna |
 | Deploy (M6) | `az containerapp update … --image …:sha-…` ×2 (api, client – två revisioner per deploy), vänta på `sha` i `/api/health` och på sista revisionen, röktest `/graphql` | en image som inte startar, en nginx-mall som inte renderas, en app som inte kommer upp – innan någon användare ser det | ______ (bara på `main`; väcks appen från noll tillkommer ~1 min) |
+| Deploy → Azure Functions (M7) | `npm ci --omit=dev` i `functions/`, `Azure/functions-action@v1` (paketet `functions/` till function-appen), röktest: `POST /api/process-image` med nyckeln hämtad i jobbet | en funktion som inte startar i Azure, ett paket utan `node_modules`, fel app-namn – innan en uppladdning i staging får 502 | ______ (bara på `main`; röktestet är en kallstart) |
 | Image (M4) | `docker/build-push-action` på `api/Dockerfile` och `client/Dockerfile` | en Dockerfile som inte går att bygga; på `main` publiceras imagerna med `sha-`tagg | ~1,5 min |
 
-`npm ci` (~25 s) dominerar – den installerar alla tre workspaces inklusive React-klientens beroenden. När `web/` tas bort (M6) halveras tiden.
+`npm ci` dominerar – den installerar alla workspaces (`shared`, `api`, `client`). React-klienten `web/` och dess beroenden togs bort i M6.
 
 ## Branch protection (ruleset på `main`)
 
@@ -44,6 +47,7 @@ flowchart LR
 - Kräver status checks **Kvalitet**, **Bygg**, **Integration** och **Image** gröna innan merge
 - Kräver att branchen är uppdaterad mot `main` före merge (annars testas en kod som aldrig kommer att finnas)
 - Gäller även admins
+- *Deploy → Azure Functions* (M7) är inte heller en status check. **Två deployjobb, oberoende av varandra** – API:et läser funktionens adress ur miljön (`IMAGE_FUNCTION_URL`), så ordningen spelar ingen roll, och det ena kan vara rött utan att det andra är det.
 - *Deploy → Azure staging* är **inte** en status check: den körs efter merge, på `main`. Blir den röd är `main` ändå korrekt – det är staging som inte uppdaterades. Rätta och merga igen, eller rulla tillbaka med `az containerapp update … --image <förra sha-taggen>` (varje image i GHCR har sin sha-tagg kvar).
 
 ## Vanliga fel vi sett
@@ -57,3 +61,7 @@ flowchart LR
 - **Deploy rött på röktestet men väntan grön:** `/api/health` svarar genom nginx (så `API_UPSTREAM` är rätt), men GraphQL ger ingen data – databasen är tom (`SEED_ON_START` saknas eller seeden misslyckades: `az containerapp logs show … --container api`). Är det väntan som är röd med `502`/inget svar är det nginx som inte når api: `API_UPSTREAM` ska vara `localhost:4000` i Azure.
 - **Deploy rött på *revision already exists*:** jobbet kördes om (Re-run) och revisionssuffixet `sha-<7>` är redan använt. Suffixet är commitens sha, så vägen framåt är en ny commit – inte Re-run.
 - Loggkommandona nedan har mallens namn (`utpost-staging`, `utpost-rg`) – byt till era.
+- **Deploy → Azure Functions rött på röktestet med *Operation timed out*:** första anropet efter en deploy är en kallstart (appen startar om från det nya paketet). `--max-time 60` brukar räcka; kör om jobbet en gång innan du letar fel. Svarar den fortfarande inte: portalen → function-appen → *Log stream*, eller *Diagnose and solve problems* → *Flex Consumption Deployment*.
+- **Röktestet ger 401:** fel eller ingen nyckel – jobbet hämtar den med `az functionapp keys list`. Står det *Fick ingen funktionsnyckel*: kontrollera `AZURE_RG` och att identiteten har Contributor på just den resursgruppen.
+- **functions-action rött med *Resource … not found* / *app-name*:** variabeln `AZURE_FUNCTION_APP` på miljön `azure-staging` saknas eller har fel namn (`gh variable list --env azure-staging`). Namnet är appens, utan `.azurewebsites.net`.
+- **Deployen grön men funktionen svarar 404 eller 500 *Cannot find module '@azure/functions'*:** paketet saknar `node_modules`. `npm ci --omit=dev` måste köras i `functions/` före functions-action, och `functions/` får inte vara en workspace i roten (då hamnar beroendena i rotens `node_modules`). Vill man låta Azure installera i stället: `remote-build: true` och inget `npm ci` – inte båda.
